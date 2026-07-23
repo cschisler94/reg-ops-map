@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Regulatory Operations – Regulations Map</title>
+
+  <!-- D3 and TopoJSON from cdnjs — required for accurate geographic rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js" crossorigin="anonymous"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      background: #f0f4f8;
+      color: #1a1a2e;
+      padding: 20px 16px 36px;
+    }
+
+    /* ── Page header ── */
+    .page-header { text-align: center; margin-bottom: 16px; }
+    .page-header h1 { font-size: 22px; font-weight: 700; color: #1a1a2e; }
+    .page-header p  { font-size: 14px; color: #6b7280; margin-top: 5px; }
+
+    /* ── Map wrapper ── */
+    .map-container {
+      position: relative;
+      max-width: 960px;
+      margin: 0 auto;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.10);
+    }
+
+    #us-map { width: 100%; height: auto; display: block; }
+
+    /* ── Ocean / background ── */
+    .map-ocean { fill: #c9dde8; }
+
+    /* ── Canadian provinces ── */
+    .province {
+      fill: #a8cfc2;
+      stroke: #fff;
+      stroke-width: 0.6;
+      cursor: pointer;
+      transition: fill 0.12s;
+    }
+    .province:hover        { fill: #7ab5a0; }
+    .province:focus        { outline: none; fill: #5e9e88; }
+    .province.has-data     { fill: #5b9e84; }
+    .province.has-data:hover { fill: #3d8068; }
+    .province.active       { fill: #1e5040 !important; stroke: #fff; stroke-width: 1.5; }
+
+    /* Thin line between provinces (mesh) */
+    .province-mesh {
+      fill: none;
+      stroke: rgba(255,255,255,0.55);
+      stroke-width: 0.4;
+      pointer-events: none;
+    }
+
+    /* ── US States ── */
+    .state {
+      fill: #a8cfc2;
+      stroke: #fff;
+      stroke-width: 0.6;
+      cursor: pointer;
+      transition: fill 0.12s;
+    }
+    .state.has-data        { fill: #5b9e84; }
+    .state:hover           { fill: #7ab5a0; }
+    .state.has-data:hover  { fill: #3d8068; }
+    .state:focus           { outline: none; fill: #2c6652; }
+    .state.active          { fill: #1e5040 !important; stroke: #fff; stroke-width: 1.5; }
+
+    /* Thin line between states (mesh) */
+    .state-mesh {
+      fill: none;
+      stroke: rgba(255,255,255,0.55);
+      stroke-width: 0.4;
+      pointer-events: none;
+    }
+
+    /* ── Region abbreviation labels ── */
+    .region-label {
+      font-size: 7px;
+      font-weight: 700;
+      fill: rgba(255,255,255,0.92);
+      text-anchor: middle;
+      dominant-baseline: central;
+      pointer-events: none;
+      user-select: none;
+      letter-spacing: 0.3px;
+    }
+
+    /* ── Loading indicator ── */
+    #map-loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      color: #6b7280;
+      background: #d6e8e0;
+    }
+
+    /* ── Popup card ── */
+    #popup {
+      display: none;
+      position: absolute;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 6px 28px rgba(0,0,0,0.18);
+      padding: 16px;
+      width: 300px;
+      z-index: 100;
+      max-height: 72vh;
+      overflow-y: auto;
+    }
+    #popup.visible { display: block; }
+
+    .popup-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 10px;
+    }
+    .popup-region-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: #1a1a2e;
+      line-height: 1.3;
+    }
+    .popup-close {
+      background: none;
+      border: none;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      color: #9ca3af;
+      padding: 0 0 0 8px;
+      flex-shrink: 0;
+    }
+    .popup-close:hover { color: #374151; }
+
+    /* ── Bill list ── */
+    .bill-list { list-style: none; }
+    .bill-item {
+      padding: 10px 0;
+      border-top: 1px solid #f0f0f0;
+    }
+    .bill-item:first-child { border-top: none; padding-top: 2px; }
+
+    .bill-id    { font-size: 11px; font-weight: 700; color: #3d8068; text-transform: uppercase; letter-spacing: 0.5px; }
+    .bill-title { font-size: 13.5px; font-weight: 600; color: #1a1a2e; margin-top: 3px; line-height: 1.4; }
+    .bill-topic { font-size: 12px; color: #6b7280; margin-top: 2px; }
+
+    .bill-status {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      margin-top: 6px;
+    }
+    .status-in-effect      { background: #d1fae5; color: #065f46; }
+    .status-implementation { background: #fef3c7; color: #78350f; }
+    .status-monitoring     { background: #e0e7ff; color: #3730a3; }
+    .status-default        { background: #f3f4f6; color: #374151; }
+
+    .bill-link {
+      display: inline-block;
+      font-size: 12px;
+      color: #3d8068;
+      text-decoration: none;
+      margin-top: 5px;
+    }
+    .bill-link:hover { text-decoration: underline; }
+
+    .no-bills { font-size: 13.5px; color: #9ca3af; font-style: italic; padding: 4px 0; }
+
+    /* ── Legend ── */
+    .legend {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 12px;
+      font-size: 12px;
+      color: #6b7280;
+    }
+    .legend-item { display: flex; align-items: center; gap: 6px; }
+    .legend-swatch { width: 14px; height: 14px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.08); }
+
+    /* ── Mobile: pin popup to bottom ── */
+    @media (max-width: 768px) {
+      #popup {
+        position: fixed;
+        bottom: 0; left: 0; right: 0; top: auto;
+        width: 100%; max-width: 100%;
+        border-radius: 14px 14px 0 0;
+        max-height: 55vh;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>Regulatory Operations – Regulations Map</h1>
+  <p>Click a state or province to see bills Reg Ops has worked on.</p>
+</div>
+
+<div class="map-container" id="map-container">
+  <div id="map-loading">Loading map…</div>
+
+  <!-- Popup card — content injected by JS -->
+  <div id="popup" role="dialog" aria-modal="true" aria-label="Region regulation details">
+    <div class="popup-header">
+      <span class="popup-region-name" id="popup-region-name">Region</span>
+      <button class="popup-close" id="popup-close" aria-label="Close popup">×</button>
+    </div>
+    <div id="popup-content"></div>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#5b9e84"></div>
+    Has Reg Ops tracked regulations
+  </div>
+  <div class="legend-item">
+    <div class="legend-swatch" style="background:#a8cfc2"></div>
+    No tracked regulations
+  </div>
+</div>
+
+<script>
+// ================================================================
+//  ██████╗  █████╗ ████████╗ █████╗
+//  ██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗
+//  ██║  ██║███████║   ██║   ███████║
+//  ██║  ██║██╔══██║   ██║   ██╔══██║
+//  ██████╔╝██║  ██║   ██║   ██║  ██║
+//  ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝
+//
+//  HOW TO ADD OR EDIT BILLS
+//  ─────────────────────────
+//  Each key is a two-letter code:
+//    US states  → standard abbreviation  (e.g. "CA", "NY", "TX")
+//    CA provinces → standard abbreviation (e.g. "ON", "BC", "QC")
+//
+//  Bill object fields:
+//    id     → Bill number/identifier      e.g. "AB 5"
+//    title  → Plain-English description   e.g. "Gig Worker Classification"
+//    topic  → Category tag               e.g. "Worker classification"
+//    status → "In effect" | "Implementation in progress" | "Monitoring only"
+//    url    → Link to doc (optional; use "" to omit)
+// ================================================================
+
+// ================================================================
+// SUMMARY DOC LINKS
+// Each url below should point to the individual Google Doc you
+// upload from the "reg-summaries" folder I created for you.
+// After uploading each file to Google Drive, paste its share link
+// in place of the placeholder text (PASTE_LINK_FOR_...).
+// ================================================================
+
+const REG_BILLS_BY_REGION = {
+
+  // ── United States ──────────────────────────────────────────────
+
+  "CA": {
+    regionName: "California",
+    bills: [
+      {
+        id: "Proposition 22",
+        title: "App-Based Drivers as Independent Contractors — minimum earnings, mileage, healthcare subsidies",
+        topic: "Worker classification / Minimum earnings",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1uGZqNW3XVHrVY4vACis1oWFjzug18KrS6zsmS8EsDBc/edit?usp=drive_link"
+      }
+    ]
+  },
+
+  "WA": {
+    regionName: "Washington",
+    bills: [
+      {
+        id: "Seattle PayUp",
+        title: "App-Based Worker Minimum Earnings & Batch Offer Transparency",
+        topic: "Minimum earnings / Offer transparency",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/196itVfFTbyAVPtOFuIZFfznzmBK_5LC2tV-43h6RtGk/edit?usp=drive_link"
+      },
+      {
+        id: "Seattle PayUp #2",
+        title: "App-Based Worker Deactivation Rights",
+        topic: "Worker protections / Deactivation",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1BuzvNNtO-o6OCQcOSgGbqfDswgyR6ZhD4Mx4y0Jdr50/edit?usp=drive_link"
+      },
+      {
+        id: "Seattle PSST",
+        title: "Gig Worker Paid Sick & Safe Time",
+        topic: "Paid sick leave",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1B47Yl4lMMkfHHlvbEsA5fk5FlbjxliJE81rGoEp1n1U/edit?usp=drive_link"
+      },
+      {
+        id: "Seattle Pre-Contract Disclosure",
+        title: "Pre-Contract & Payment Disclosure Ordinance",
+        topic: "Transparency / Disclosures",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1TGDF1paYRGgaFRW-3jzRuhTYv1NK7WtftH2O3lz8UNo/edit?usp=drive_link"
+      }
+    ]
+  },
+
+  "NY": {
+    regionName: "New York",
+    bills: [
+      {
+        id: "NYC Minimum Earnings",
+        title: "Grocery delivery worker minimum pay ($22.13/hr as of Apr 2026)",
+        topic: "Minimum earnings",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1B1e8g-Pfmoq16YfrR3F78Kk3zShf1QJkw8rebjszMd8/edit?usp=drive_link"
+      },
+      {
+        id: "NYC E-Bike Access",
+        title: "E-bike access requirements — 50% of active shoppers must have discounted access",
+        topic: "Worker safety / Vehicle access",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1qNUYGbPiQSgG9rm9llmZodE2il39DvSh61YAQJQ-YZs/edit?usp=drive_link"
+      },
+      {
+        id: "NYC Congestion Pricing",
+        title: "Congestion toll compensation program for Lower Manhattan deliveries",
+        topic: "Congestion pricing",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/11ELFXzFJntmB6DcukQBKEk8HOBhvmKaEmXQMA3OMDXc/edit?usp=drive_link"
+      }
+    ]
+  },
+
+  "CO": {
+    regionName: "Colorado",
+    bills: [
+      {
+        id: "HB 24-1129",
+        title: "Protections for DNC Drivers — 60s batch exclusivity, tip protection & deactivation appeals",
+        topic: "Worker protections / Transparency",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/10-D7oLHH8xOJWyhDOZ-FGnvKsDOvct9KOWZr-HCqyuc/edit?usp=drive_link"
+      }
+    ]
+  },
+
+  "DC": {
+    regionName: "District of Columbia",
+    bills: [
+      {
+        id: "Bill 25-0416",
+        title: "Carrier for Hire — vehicle registration, trade dress & DFHV enforcement",
+        topic: "Carrier licensing / Vehicle registration",
+        status: "Monitoring only",
+        url: "https://docs.google.com/document/d/1iWh4LI5hs7QdluceF_ryh7ssqzogKllcHchyukHg6cQ/edit?usp=drive_link"
+      }
+    ]
+  },
+
+  "TX": {
+    regionName: "Texas",
+    bills: [
+      {
+        id: "HB 4215",
+        title: "Delivery Network Company Framework — permitting, anti-intoxication policy & complaint handling",
+        topic: "Platform permitting / Safety",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1am3AZX3gSAhj4fu5z0ot9anOZZkJUjTe-pTj49gRONs/edit?usp=drive_link"
+      }
+    ]
+  },
+
+  "IL": {
+    regionName: "Illinois",
+    bills: [
+      {
+        id: "Chicago Paid Leave Ordinance",
+        title: "Paid Leave & Paid Sick/Safe Leave — applies to Instacart Chicago employees (not shoppers)",
+        topic: "Employee paid leave (internal)",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1R1foLPd-zdpQRWmpbYCtMVxDkUa7K2ui-C0lOknPFJA/edit?usp=drive_link"
+      }
+    ]
+  },
+
+  // ── Canada ─────────────────────────────────────────────────────
+
+  "ON": {
+    regionName: "Ontario",
+    bills: [
+      {
+        id: "DPWRA",
+        title: "Digital Platform Worker Rights Act — earnings floor, pay transparency & deactivation rules",
+        topic: "Worker rights / Minimum earnings",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1lerIRbfbinuSHCU51nAFxqYU_DxtYxeAmuEvoek26m0/edit?usp=drive_link"
+      }
+    ]
+  },
+
+  "BC": {
+    regionName: "British Columbia",
+    bills: [
+      {
+        id: "BC ESA",
+        title: "Employment Standards Act — minimum engaged-time rate (120% of min wage) + km allowance",
+        topic: "Worker standards / Minimum earnings",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1LUfS44Tklwav4CcqqTqntK3FRSWz7TtjCrgMi3ki5FA/edit?usp=drive_link"
+      }
+    ]
+  },
+
+  "QC": {
+    regionName: "Quebec",
+    bills: [
+      {
+        id: "Bill 72",
+        title: "Consumer Protection Act amendments — food pricing display & tip calculation rules",
+        topic: "Consumer protection / Pricing transparency",
+        status: "In effect",
+        url: "https://docs.google.com/document/d/1sHmTeRiypv8U1dctSs9PKEyQiKSmWm55o-cUrvYneMI/edit?usp=drive_link"
+      }
+    ]
+  }
+
+  // ── Add more states/provinces below, separating with a comma ──
+
+};
+
+// ================================================================
+//  GEOGRAPHIC LOOKUP TABLES (no edits needed)
+// ================================================================
+
+// US FIPS numeric code → two-letter abbreviation (11 = District of Columbia)
+const FIPS_TO_STATE = {
+  "01":"AL","02":"AK","04":"AZ","05":"AR","06":"CA",
+  "08":"CO","09":"CT","10":"DE","11":"DC","12":"FL","13":"GA",
+  "15":"HI","16":"ID","17":"IL","18":"IN","19":"IA",
+  "20":"KS","21":"KY","22":"LA","23":"ME","24":"MD",
+  "25":"MA","26":"MI","27":"MN","28":"MS","29":"MO",
+  "30":"MT","31":"NE","32":"NV","33":"NH","34":"NJ",
+  "35":"NM","36":"NY","37":"NC","38":"ND","39":"OH",
+  "40":"OK","41":"OR","42":"PA","44":"RI","45":"SC",
+  "46":"SD","47":"TN","48":"TX","49":"UT","50":"VT",
+  "51":"VA","53":"WA","54":"WV","55":"WI","56":"WY"
+};
+
+const STATE_NAMES = {
+  "AL":"Alabama","AK":"Alaska","AZ":"Arizona","AR":"Arkansas",
+  "CA":"California","CO":"Colorado","CT":"Connecticut","DE":"Delaware",
+  "DC":"District of Columbia",
+  "FL":"Florida","GA":"Georgia","HI":"Hawaii","ID":"Idaho",
+  "IL":"Illinois","IN":"Indiana","IA":"Iowa","KS":"Kansas",
+  "KY":"Kentucky","LA":"Louisiana","ME":"Maine","MD":"Maryland",
+  "MA":"Massachusetts","MI":"Michigan","MN":"Minnesota","MS":"Mississippi",
+  "MO":"Missouri","MT":"Montana","NE":"Nebraska","NV":"Nevada",
+  "NH":"New Hampshire","NJ":"New Jersey","NM":"New Mexico","NY":"New York",
+  "NC":"North Carolina","ND":"North Dakota","OH":"Ohio","OK":"Oklahoma",
+  "OR":"Oregon","PA":"Pennsylvania","RI":"Rhode Island","SC":"South Carolina",
+  "SD":"South Dakota","TN":"Tennessee","TX":"Texas","UT":"Utah",
+  "VT":"Vermont","VA":"Virginia","WA":"Washington","WV":"West Virginia",
+  "WI":"Wisconsin","WY":"Wyoming"
+};
+
+// Statistics Canada SGC code → two-letter province abbreviation
+const SGC_TO_PROVINCE = {
+  "10":"NL","11":"PE","12":"NS","13":"NB","24":"QC",
+  "35":"ON","46":"MB","47":"SK","48":"AB","59":"BC",
+  "60":"YT","61":"NT","62":"NU"
+};
+
+const PROVINCE_NAMES = {
+  "NL":"Newfoundland and Labrador","PE":"Prince Edward Island",
+  "NS":"Nova Scotia","NB":"New Brunswick","QC":"Quebec",
+  "ON":"Ontario","MB":"Manitoba","SK":"Saskatchewan",
+  "AB":"Alberta","BC":"British Columbia","YT":"Yukon",
+  "NT":"Northwest Territories","NU":"Nunavut"
+};
+
+// States/provinces large enough to show an inline abbreviation label
+const SHOW_LABEL = new Set([
+  // US
+  "AK","AZ","AR","CA","CO","FL","GA","ID","IL","IN","IA",
+  "KS","KY","LA","ME","MI","MN","MS","MO","MT","NE","NV",
+  "NM","NY","NC","ND","OH","OK","OR","PA","SC","SD","TN",
+  "TX","UT","VA","WA","WV","WI","WY",
+  // Canada
+  "BC","AB","SK","MB","ON","QC","NT","NU","YT","NL"
+]);
+
+// ================================================================
+//  MAP RENDERING
+// ================================================================
+
+const W = 960, H = 680;
+
+// Albers conic equal-area projection tuned for North America.
+// Center lowered to 48 and scale reduced so FL + TX southern tips are fully visible.
+const projection = d3.geoAlbers()
+  .center([0, 48])
+  .rotate([97, 0])
+  .parallels([33, 65])
+  .scale(700)
+  .translate([W * 0.48, H * 0.52]);
+
+const pathGen = d3.geoPath().projection(projection);
+
+// Build SVG (inserted before the popup div)
+const svg = d3.select("#map-container")
+  .insert("svg", "#popup")
+  .attr("id", "us-map")
+  .attr("viewBox", `0 0 ${W} ${H}`)
+  .attr("preserveAspectRatio", "xMidYMid meet")
+  .attr("role", "img")
+  .attr("aria-label", "Interactive map of United States and Canada");
+
+// Ocean/background fill
+svg.append("rect")
+  .attr("class", "map-ocean")
+  .attr("width", W)
+  .attr("height", H);
+
+// ── Data URLs ──
+const US_URL = "https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json";
+// Canadian provinces as GeoJSON from a verified public source
+const CA_URL = "https://cdn.jsdelivr.net/gh/codeforgermany/click_that_hood@main/public/data/canada.geojson";
+
+Promise.all([
+  d3.json(US_URL),
+  d3.json(CA_URL).catch(() => null)
+])
+.then(([usData, caGeo]) => {
+
+  document.getElementById("map-loading").style.display = "none";
+
+  // ── 1. Canada layer — drawn first so US states appear on top ──
+  if (caGeo && caGeo.features) {
+    svg.append("g").attr("class", "provinces-layer")
+      .selectAll("path")
+      .data(caGeo.features)
+      .enter().append("path")
+      .attr("class", d => {
+        const code = provinceCode(d);
+        return "province" + (REG_BILLS_BY_REGION[code] ? " has-data" : "");
+      })
+      .attr("d", pathGen)
+      .attr("id",          d => provinceCode(d) || null)
+      .attr("tabindex",    "0")
+      .attr("aria-label",  d => PROVINCE_NAMES[provinceCode(d)] || provinceName(d))
+      .on("click", (event, d) => {
+        const code = provinceCode(d);
+        handleRegionClick(event, code, PROVINCE_NAMES[code] || provinceName(d));
+      })
+      .on("keydown", regionKeydown);
+  }
+
+  // ── 2. US States ──
+  const usFeatures = topojson.feature(usData, usData.objects.states).features;
+
+  svg.append("g").attr("class", "states-layer")
+    .selectAll("path")
+    .data(usFeatures)
+    .enter().append("path")
+    .attr("class", d => {
+      const code = fipsToState(d.id);
+      return "state" + (REG_BILLS_BY_REGION[code] ? " has-data" : "");
+    })
+    .attr("d", pathGen)
+    .attr("id",          d => fipsToState(d.id))
+    .attr("tabindex",    "0")
+    .attr("aria-label",  d => STATE_NAMES[fipsToState(d.id)] || fipsToState(d.id))
+    .on("click", (event, d) => {
+      const code = fipsToState(d.id);
+      handleRegionClick(event, code, STATE_NAMES[code] || code);
+    })
+    .on("keydown", regionKeydown);
+
+  // State interior mesh (borders between states)
+  svg.append("path")
+    .datum(topojson.mesh(usData, usData.objects.states, (a, b) => a !== b))
+    .attr("class", "state-mesh")
+    .attr("d", pathGen);
+
+  // ── 3. Abbreviation labels ──
+  const labelG = svg.append("g").attr("class", "labels-layer");
+
+  // Province labels
+  if (caGeo && caGeo.features) {
+    caGeo.features.forEach(d => {
+      const code = provinceCode(d);
+      if (!SHOW_LABEL.has(code)) return;
+      const c = pathGen.centroid(d);
+      if (!c || isNaN(c[0])) return;
+      labelG.append("text")
+        .attr("class", "region-label")
+        .attr("x", c[0]).attr("y", c[1])
+        .text(code);
+    });
+  }
+
+  // US labels (rendered after provinces so they sit on top)
+  usFeatures.forEach(d => {
+    const code = fipsToState(d.id);
+    if (!SHOW_LABEL.has(code)) return;
+    const c = pathGen.centroid(d);
+    if (!c || isNaN(c[0])) return;
+    labelG.append("text")
+      .attr("class", "region-label")
+      .attr("x", c[0]).attr("y", c[1])
+      .text(code);
+  });
+
+})
+.catch(err => {
+  const el = document.getElementById("map-loading");
+  el.textContent = "Map failed to load. The host must have outbound internet access to cdn.jsdelivr.net.";
+  console.error("Map load error:", err);
+});
+
+// ── Helpers ──
+
+function fipsToState(id) {
+  return FIPS_TO_STATE[String(id).padStart(2, "0")] || ("state-" + id);
+}
+
+// Province name → 2-letter code (GeoJSON source uses English province names)
+const PROVINCE_NAME_TO_CODE = {
+  "Alberta":"AB","British Columbia":"BC","Manitoba":"MB",
+  "New Brunswick":"NB","Newfoundland and Labrador":"NL","Newfoundland":"NL",
+  "Northwest Territories":"NT","Nova Scotia":"NS","Nunavut":"NU",
+  "Ontario":"ON","Prince Edward Island":"PE",
+  "Quebec":"QC","Québec":"QC",
+  "Saskatchewan":"SK","Yukon":"YT","Yukon Territory":"YT"
+};
+
+function provinceName(d) {
+  const p = d.properties || {};
+  return p.name || p.NAME || p.PRENAME || p.province || "";
+}
+
+function provinceCode(d) {
+  const name = provinceName(d);
+  if (PROVINCE_NAME_TO_CODE[name]) return PROVINCE_NAME_TO_CODE[name];
+  // Partial match fallback
+  const key = Object.keys(PROVINCE_NAME_TO_CODE).find(k =>
+    name.toLowerCase().includes(k.toLowerCase()) ||
+    k.toLowerCase().includes(name.toLowerCase())
+  );
+  return key ? PROVINCE_NAME_TO_CODE[key] : "";
+}
+
+// ================================================================
+//  POPUP LOGIC
+// ================================================================
+
+function escapeHTML(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function statusClass(s) {
+  const l = (s || "").toLowerCase();
+  if (l.includes("in effect"))       return "status-in-effect";
+  if (l.includes("implementation"))  return "status-implementation";
+  if (l.includes("monitor"))         return "status-monitoring";
+  return "status-default";
+}
+
+function handleRegionClick(event, code, displayName) {
+  event.stopPropagation();
+
+  // Highlight active region
+  d3.selectAll(".state, .province").classed("active", false);
+  d3.select(event.currentTarget).classed("active", true);
+
+  // Populate popup
+  const data = REG_BILLS_BY_REGION[code];
+  const regionName = (data && data.regionName) ? data.regionName : displayName;
+  document.getElementById("popup-region-name").textContent = regionName;
+
+  if (!data || !data.bills || data.bills.length === 0) {
+    document.getElementById("popup-content").innerHTML =
+      '<p class="no-bills">No tracked regulations yet for this region.</p>';
+  } else {
+    const items = data.bills.map(b => `
+      <li class="bill-item">
+        <div class="bill-id">${escapeHTML(b.id)}</div>
+        <div class="bill-title">${escapeHTML(b.title)}</div>
+        <div class="bill-topic">${escapeHTML(b.topic)}</div>
+        <span class="bill-status ${statusClass(b.status)}">${escapeHTML(b.status)}</span>
+        ${b.url ? `<br><a class="bill-link" href="${escapeHTML(b.url)}" target="_blank" rel="noopener">Summary doc →</a>` : ""}
+      </li>`).join("");
+    document.getElementById("popup-content").innerHTML =
+      `<ul class="bill-list">${items}</ul>`;
+  }
+
+  const popup = document.getElementById("popup");
+  popup.classList.add("visible");
+
+  requestAnimationFrame(() => {
+    const container = document.getElementById("map-container");
+    const cRect  = container.getBoundingClientRect();
+    const clickX = event.clientX - cRect.left;
+    const clickY = event.clientY - cRect.top;
+    const pW = popup.offsetWidth;
+    const pH = popup.offsetHeight;
+    const cW = container.offsetWidth;
+    const cH = container.offsetHeight;
+
+    let left = clickX + 14;
+    let top  = clickY + 14;
+    if (left + pW > cW - 8) left = clickX - pW - 14;
+    if (left < 8)            left = 8;
+    if (top  + pH > cH - 8) top  = clickY - pH - 14;
+    if (top  < 8)            top  = 8;
+
+    popup.style.left = left + "px";
+    popup.style.top  = top  + "px";
+  });
+}
+
+function regionKeydown(event, d) {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    // Synthesise a click at the centroid of the region
+    const bbox = event.currentTarget.getBoundingClientRect();
+    const synth = new MouseEvent("click", {
+      bubbles: true,
+      clientX: bbox.left + bbox.width  / 2,
+      clientY: bbox.top  + bbox.height / 2
+    });
+    event.currentTarget.dispatchEvent(synth);
+  }
+}
+
+function closePopup() {
+  document.getElementById("popup").classList.remove("visible");
+  d3.selectAll(".state.active, .province.active").classed("active", false);
+}
+
+document.getElementById("popup-close").addEventListener("click", closePopup);
+document.addEventListener("click", e => {
+  const popup = document.getElementById("popup");
+  if (popup.classList.contains("visible") && !popup.contains(e.target)) closePopup();
+});
+document.addEventListener("keydown", e => { if (e.key === "Escape") closePopup(); });
+</script>
+
+<!--
+================================================================
+FOR THE NON-ENGINEER: QUICK REFERENCE
+================================================================
+
+1. ADDING OR EDITING BILLS
+   Open this file in any text editor. Find REG_BILLS_BY_REGION near
+   the top of the <script>. Each block looks like:
+
+     "CA": {
+       regionName: "California",
+       bills: [
+         {
+           id: "AB 5",
+           title: "Gig Worker Classification",
+           topic: "Worker classification",
+           status: "In effect",
+           url: "https://link-to-internal-doc"
+         }
+       ]
+     },
+
+   - To add a bill to an existing state, copy one bill { } block
+     and paste it inside the bills: [ ] array (comma-separated).
+   - To add a new state or province, copy a full "XX": { } block,
+     change the key, and fill in regionName and bills.
+
+   Status colours:
+     "In effect"                  → green badge
+     "Implementation in progress" → yellow badge
+     "Monitoring only"            → blue badge
+
+2. CANADIAN PROVINCES
+   Works the same as US states — just use the two-letter provincial
+   abbreviation as the key (e.g. "ON", "BC", "AB", "QC", "MB", etc.).
+   Province outlines load automatically from canada-atlas.
+
+3. NETWORK REQUIREMENT
+   This file loads map shapes from cdn.jsdelivr.net and
+   cdnjs.cloudflare.com at runtime. The browser displaying it
+   must have outbound internet access to those CDNs.
+
+4. EMBEDDING IN CONFLUENCE
+   a) Host this file at a stable internal URL
+      (Google Sites, S3 + CloudFront, GitHub Pages, etc.)
+   b) In Confluence, add an "iFrame" or "HTML" macro:
+        <iframe src="YOUR_URL" width="100%" height="660"
+                frameborder="0" scrolling="no"></iframe>
+   c) Recommended iframe height: 660px
+
+================================================================
+-->
+
+</body>
+</html>
